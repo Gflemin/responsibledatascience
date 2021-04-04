@@ -1,8 +1,3 @@
----
-title: "README"
-output: html_document
----
-
 ![Book cover](/images/responsible_ds_cover.jpg)
 
 # Code repository
