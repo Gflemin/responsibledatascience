@@ -3,14 +3,14 @@ title: "README"
 output: html_document
 ---
 
-![Book cover](images//responsible_ds_cover.jpg)
+![Book cover](/images/responsible_ds_cover.jpg)
 
 # Code repository
 **Responsible Data Science**:  
 
 Transparency and Fairness in Algorithms
 
-by Grant Fleming and [Peter Bruce](https://www.amazon.com/Peter-Bruce/e/B01N3C4ACN%3Fref=dbs_a_mng_rwt_scns_share)
+Grant Fleming and [Peter Bruce](https://www.amazon.com/Peter-Bruce/e/B01N3C4ACN%3Fref=dbs_a_mng_rwt_scns_share)
 
 - Publisher: Wiley; 1st edition (May 11th, 2022)
 - ISBN-10: 1119741750
@@ -38,7 +38,7 @@ Note that running these scripts without modification requires:
 ## Python
 The Python code for the book is exclusively for the facial recognition
 example in Chapter 8. Unfortunately, the code and data for this chapter is 
-large in size and does not fit into the code repository. To download and
+large in size and does not fit into the code repository itself. To download and
 run it yourself, you should do the following:
 
 1. Navigate to the folder at https://drive.google.com/drive/folders/13OpxSM3B1ff5AHkRbcHsR4Ys3_44OCuA?usp=sharing and
