@@ -106,7 +106,7 @@ wflows = gen_mods(model_frame,
 ```{r}
 set.seed(10)
 
-boots = gen_boots(processed_data[["input_data"]], num_resamples = 5)
+boots = gen_boots(processed_data[["input_data"]], num_resamples = 50)
 ```
 
 
