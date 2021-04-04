@@ -1,0 +1,10 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.drake
+.Rapp.history
+library/
+python/
+staging/
+inp/

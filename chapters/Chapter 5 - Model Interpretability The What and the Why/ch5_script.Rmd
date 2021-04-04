@@ -1,0 +1,190 @@
+---
+title: "ch5_script.Rmd 04/03/2021"
+author: Grant Fleming
+output: 
+  word_document: default
+  html_document:
+    df_print: paged
+---
+
+### Setup 
+```{r setup}
+# restore packages from lockfile - enter "y" 
+# if you are prompted to install or update any packages
+renv::restore()
+
+# load critical packages - install if necessary by running
+# install.packages(c("here", "pacman"))
+library(here)
+library(pacman)
+
+# source scripts for our packages and functions
+source(here("setup/ch5_packages.R"))
+source(here("setup/ch5_functions.R"))
+```
+
+### Load raw data
+```{r}
+df_raw = read_csv(here("data/germancredit.csv")) %>%
+  mutate(Class = factor(Class))
+```
+
+### View raw data
+```{r}
+glimpse(df_raw)
+```
+
+### Split the data 
+```{r}
+# use rsample::initial_split() to split data, generating an rsplit object
+data_split = df_raw %>%
+  initial_split(prop = 0.7)
+
+# pull out our train and test data from our rsplit object, data_split
+training_data = training(data_split)
+testing_data = testing(data_split)
+
+# save the name of our target so that we can reference it letter
+target_name = "Class"
+```
+
+### Find and select important features
+```{r}
+# check for feature importance
+imp_feats = Boruta(training_data, training_data$Class)
+
+# put our Boruta output into a dataframe and extract important features
+imp_confirmed = enframe(imp_feats$finalDecision) %>%     # turns Boruta output into a dataframe
+  filter(value == "Confirmed") %>%
+  mutate(name = str_remove(name, "train_data\\.")) %>%
+  pull(name)                                             # "pull" the name column out of the dataframe 
+
+# subset down to only our important features
+df_imps = training_data %>% 
+  select(all_of(imp_confirmed))
+
+# create a version of our training data that doesn't have our target (Class)
+df_subsetted = df_imps %>% 
+  select(-Class)
+
+```
+
+### A bit more pre-processing
+```{r}
+# squeeze "Duration" and "Amount" to a range of 0 and 1; don't round until later to maintain precision
+df_processed = df_subsetted %>% 
+  mutate(Duration = (Duration - min(Duration))/(max(Duration) - min(Duration)),
+         Amount = (Amount-min(Amount))/(max(Amount)-min(Amount)))
+```
+
+### Check correlations
+```{r}
+correlate(df_subsetted, method = "pearson") %>%
+  stretch() %>% 
+  filter(abs(r) >= 0.7)   
+```
+
+### Execute preprocessing
+```{r}
+data = preprocessor(df_raw) 
+```
+
+### View preprocessed train data
+```{r}
+glimpse(data[["train"]])
+```
+
+### Build baseline models 
+```{r}
+mod_log = logistic_reg() %>%
+  set_mode("classification") %>%
+  set_engine("glm")
+mod_rf = rand_forest() %>%
+  set_mode("classification") %>%
+  set_engine("ranger")
+```
+
+### Fit models 
+```{r}
+mod_log_fit = mod_log %>%
+  fit(Class ~., data = data[["train"]])
+mod_rf_fit = mod_rf %>%
+  fit(Class ~., data = data[["train"]])
+```
+
+### Generate predictions 
+```{r}
+# predict on test sets
+preds_mod_log = mod_log_fit %>%
+  predict(data[["test"]], type = "prob") %>%
+  bind_cols(data[["test"]]) %>%
+  mutate(pred_class = factor(if_else(.[, 1] > .[, 2], "Bad", "Good")))
+
+# predict on test sets
+preds_mod_rf = mod_rf_fit %>%
+  predict(data[["test"]], type = "prob") %>%
+  bind_cols(data[["test"]]) %>%
+  mutate(pred_class = factor(if_else(.[, 1] > .[, 2], "Bad", "Good")))
+```
+
+### Calculate AUC/ROC 
+```{r echo = TRUE, eval = TRUE}
+# generate AUC scores for each model 
+log_auc = preds_mod_log %>%
+  roc_auc(truth = Class, .pred_Bad)
+rf_auc = preds_mod_rf %>%
+  roc_auc(truth = Class, .pred_Bad)
+
+# bind AUC metrics together
+aucs = bind_rows(log_auc, rf_auc)
+
+# get data to build a roc curve for the logistic regression
+log_rocs = preds_mod_log %>%
+  roc_curve(truth = Class, .pred_Bad) %>% 
+  mutate(model = "log")
+
+# get data to build a roc curve for the random forest
+rf_rocs = preds_mod_rf %>%
+  roc_curve(truth = Class, .pred_Bad) %>% 
+  mutate(model = "rf")
+
+# bind roc metric dataframes together 
+rocs = bind_rows(log_rocs, rf_rocs) 
+```
+
+### Plot ROC curves by model
+```{r}
+rocs %>% 
+  ggplot(., aes(x = 1 - specificity, y = sensitivity, group = model, color = model)) +
+  geom_line(size = 1.2) +
+  geom_abline(
+    lty = 2, 
+    alpha = 0.5,
+    color = "gray50",
+    size = 1.2) +
+  ggtitle("ROC curves for baseline models")  
+```
+
+### Run benchmarker and save output as a list
+```{r}
+benchmarks = benchmarker(df_raw, num = 30, 
+                         model_names = c("decision_tree", "random_forest"), 
+                         target = "Class")
+```
+
+### Show benchmark metrics
+```{r echo = FALSE}
+benchmarks[["metrics"]]
+```
+
+### Show benchmark two plot
+```{r echo = FALSE}
+benchmarks[["two_plot"]]
+```
+
+### Show benchmark four plot
+```{r echo = FALSE}
+benchmarks[["four_plot"]]
+```
+
+

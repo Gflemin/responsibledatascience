@@ -1,0 +1,81 @@
+---
+title: "ch2_script.Rmd 04/03/2021"
+author: Grant Fleming
+output:
+  word_document: default
+  html_notebook:
+    highlight: null
+  html_document:
+    df_print: paged
+---
+
+### Setup 
+```{r setup}
+# restore packages from lockfile - enter "y" 
+# if you are prompted to install or update any packages
+renv::restore()
+
+# load critical packages - install if necessary by running
+# install.packages(c("here", "pacman"))
+library(here)
+library(pacman)
+
+# source scripts for our packages and functions
+source(here("setup/ch2_packages.R"))
+source(here("setup/ch2_functions.R"))
+
+# set a seed
+set.seed(10)
+```
+
+### Load raw data
+```{r}
+df_raw = read_delim(here("data/student-mat.csv"), delim = ";") 
+```
+### Initial variable selection and cleaning
+```{r}
+df = df_raw %>% 
+  mutate(class = c("Math")) %>% 
+  select(G3, guardian, failures, schoolsup, absences) %>% 
+  mutate(G3 = as_factor(if_else(G3 >= 10, "1", "0")))
+
+```
+
+### Preprocess raw data 
+```{r}
+data_classif = preprocess_data(df, 0.7, target = "G3", short = TRUE)
+```
+
+### Fit logistic regression on the processed data
+```{r}
+fit_model_log_class = logistic_reg() %>% 
+  set_mode("classification") %>% 
+  set_engine("glm") %>% 
+  fit(G3 ~ ., data = data_classif[["train"]]) 
+```
+
+### Get a table of coefficients
+```{r}
+fit_model_log_class %>% 
+  tidy() %>% 
+  mutate(p.value = round(p.value, 3))
+```
+
+### Generate predictions on the test set and bind to test data
+```{r}
+preds_log_class = fit_model_log_class %>% 
+  predict(new_data = data_classif[[2]],
+          type = "prob") %>% 
+  bind_cols(data_classif[[2]]) %>% 
+  select(G3, .pred_1)
+```
+
+### Calculate AUC
+```{r}
+preds_log_class %>% 
+  summarize(auc = roc_auc_vec(truth = G3,
+                              estimate = .pred_1)) %>% 
+  pull()
+```
+
+

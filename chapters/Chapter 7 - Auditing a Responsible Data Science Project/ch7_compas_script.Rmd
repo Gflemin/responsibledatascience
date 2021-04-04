@@ -1,0 +1,972 @@
+---
+title: "ch7_compas_script.Rmd 04/03/2021"
+output:
+  word_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+
+### Setup 
+```{r setup}
+# restore packages from lockfile - enter "y" 
+# if you are prompted to install or update any packages
+renv::restore()
+
+# load critical packages - install if necessary by running
+# install.packages(c("here", "pacman"))
+library(here)
+library(pacman)
+
+# source scripts for our packages and functions
+source(here("setup/ch7_packages.R"))
+source(here("setup/ch7_functions.R"))
+
+# set a seed
+set.seed(10)
+```
+
+# Justification, Compilation, and Preparation Review
+
+### Load raw COMPAS data
+```{r}
+compas_raw = read_csv(here("data/compas-scores-two-years.csv"))
+```
+
+### Preview raw COMPAS data
+```{r}
+glimpse(compas_raw)
+```
+
+### Clean COMPAS data
+```{r}
+compas = clean_compas(compas_raw)
+```
+
+### Make protected features
+```{r}
+compas_protected = compas %>% 
+  make_protected(c("age", "race", "sex"))
+```
+
+### Split data into train/test
+```{r}
+set.seed(10)
+
+compas_split = compas_protected %>% 
+    initial_split(prop = 0.7) 
+```
+
+### Feature engineering/selection
+```{r}
+set.seed(10)
+
+processed_data = compas_split %>% 
+  gen_preprocessed_data(target = "two_year_recid")
+```
+
+# Modeling 
+
+### Set initial modeling parameters and metrics
+```{r}
+model_names = c("logistic_regression", "nearest_neighbor", "svm_rbf", "random_forest")
+
+model_mode = "classification"
+
+target_name = "two_year_recid"
+
+event_name = "pred_1"
+
+tune_flag = FALSE
+
+protected_features = c("age", "race", "sex")
+
+privileged_groups = c("Greater than 45", 
+                      "Caucasian",
+                      "Female")
+
+my_metrics = metric_set(yardstick::accuracy, yardstick::roc_auc, yardstick::spec)
+
+```
+
+
+### Generate model specifications
+```{r}
+set.seed(10)
+
+wflows = gen_mods(model_frame, 
+                names = model_names, 
+                mode = model_mode, 
+                tune = tune_flag,
+                recipe = processed_data[["recipe"]])
+
+```
+
+### Generate bootstrap resamples 
+```{r}
+set.seed(10)
+
+boots = gen_boots(processed_data[["input_data"]], num_resamples = 5)
+```
+
+
+### Iterate over workflows to create a dataframe of bootstrap resample specifications
+```{r}
+set.seed(10)
+
+# NOTE: Any time the map function is used, we are iterating over the first object within the parentheses by applying the second object, a function, to it. The same applies to map2, though we are iterating over the first two objects and applying the third to each as a function.
+map_frame = map(wflows, 
+                gen_map_frame, 
+                boots, 
+                metrics = my_metrics, 
+                names = model_names)
+
+```
+
+### Iterate over map_frame and model_names to execute bootstrap resampling
+```{r}
+set.seed(10)
+
+resamples = map2(map_frame, 
+                 model_names, 
+                 gen_resample, 
+                 resample = boots, 
+                 metrics = my_metrics, 
+                 tune = tune_flag, 
+                 model_frame = model_frame,
+                 df = processed_data[["train"]],
+                 target = target_name)
+
+```
+
+### View resample results 
+```{r}
+resamples %>% 
+  map(collect_metrics) %>% 
+  bind_rows() %>% 
+  relocate(model) %>% 
+  dplyr::select(model, .metric, mean) %>% 
+  arrange(.metric, -mean)
+```
+
+### Plot Cost of Interpretability (COI)
+```{r}
+coi_plot = plot_coi_comparison(resamples,
+             interp_model = "logistic_regression",
+             bbox_model = "random_forest",
+             metric_comparison = c("accuracy", "roc_auc", "spec"))
+
+print(coi_plot)
+```
+
+### Generate bounding "models" (distributions of featureless performance and estimated optimal performance)
+```{r}
+bounding_models = gen_bounding(processed_data, 
+                               target = target_name, 
+                               boots = boots, 
+                               metrics = metric_set(yardstick::accuracy),
+                               optimal_mean = 0.71,
+                               optimal_sd = 0.02)
+```
+
+### Plot bootstrap estimates of performance for models and bounding models
+```{r}
+baseline_plot = plot_baseline_models(bounding_models, 
+                                     resamples, 
+                                     num_resamples = 50,
+                                     full_plot = TRUE, 
+                                     display_metric = "accuracy")
+
+print(baseline_plot)
+```
+
+### Create new model specifications from resample objects
+```{r}
+set.seed(10)
+
+model_names_small = c("logistic_regression", "random_forest")
+
+model_structs = map2(resamples, map_frame, gen_model_struct, 
+                     tune = tune_flag) %>% 
+  set_names(model_names)
+```
+
+### Fit all models
+```{r}
+fit_mods = map(model_structs, fit, processed_data[["input_data"]]) %>% 
+  set_names(model_names) %>% 
+  magrittr::extract(model_names_small)
+
+```
+
+### Show exponentiated coefficients for fitted logistic regression
+```{r}
+fit_mods[[1]] %>% 
+  tidy() %>% 
+  mutate(estimate = exp(estimate))
+```
+
+### Generate predictions on the test set for each model
+```{r}
+set.seed(10)
+
+pred_data = gen_pred_data(fit_mods, 
+                          mode = model_mode, 
+                          data_split = compas_split,
+                          event_level = "1")
+
+```
+
+### Save new performance metrics to evaluate models upon
+```{r}
+more_metrics = metric_set(yardstick::accuracy, 
+                          yardstick::roc_auc, 
+                          yardstick::precision,
+                          yardstick::npv, 
+                          yardstick::sens, 
+                          yardstick::spec)
+```
+
+### Evaluate model on new performance metrics
+```{r}
+mod_metrics = map(pred_data, 
+                  gen_overall_metrics, 
+                  target = target_name, 
+                  estimate = "pred_class", 
+                  val_interest = "1",
+                  metrics = more_metrics,  
+                  mode = model_mode) %>% 
+  purrr::map2(model_names_small, assign_names) %>%  
+  bind_rows() 
+```
+
+# Auditing
+
+### Calculate performance metrics across protected groups
+```{r}
+protected_metrics = map2(pred_data, 
+                         model_names_small, 
+                         gen_protected_metrics,
+                         target = target_name,
+                         event_name = "pred_1",
+                         estimate = "pred_class", 
+                         mode = model_mode, 
+                         protected = protected_features,  
+                         privileged = privileged_groups, 
+                         metrics = more_metrics) %>% 
+    bind_rows()
+```
+
+### Plot accuracy accross protected groups (race)
+```{r}
+protected_metrics_plot_acc = plot_protected_metrics(protected_metrics, 
+                                                protected = "race_protected", 
+                                                display_metric = "accuracy")
+
+print(protected_metrics_plot_acc)
+```
+
+### Plot AUC across protected groups (race)
+```{r}
+protected_metrics_plot_auc = plot_protected_metrics(protected_metrics, 
+                                                protected = "race_protected", 
+                                                display_metric = "roc_auc")
+
+print(protected_metrics_plot_auc)
+```
+
+### Plot specificity across protected groups (race) 
+```{r}
+protected_metrics_plot_spec = plot_protected_metrics(protected_metrics, 
+                       protected = "race_protected", 
+                       display_metric = "spec") 
+
+print(protected_metrics_plot_spec)
+```
+
+### Plot FPR across protected groups (race)
+```{r}
+fp_error_direction_plot = plot_error_direction(pred_data, 
+                                            mode = model_mode,
+                                            display_feature = "race_protected", 
+                                            false_positive = TRUE, 
+                                            model = model_names_small, 
+                                            target = target_name)
+
+
+print(fp_error_direction_plot)
+```
+
+### Plot FNR across protected groups (race)
+```{r}
+fn_error_direction_plot = plot_error_direction(pred_data, 
+                                            mode = model_mode,
+                                            display_feature = "race_protected", 
+                                            false_positive = FALSE, 
+                                            model = model_names_small, 
+                                            target = target_name)
+
+print(fn_error_direction_plot)
+```
+
+
+## Fairness metrics
+
+### Calculate fairness metrics for all models
+```{r}
+fairness_metrics = gen_fairness_metrics(pred_data, 
+                                        target = target_name, 
+                                        model = model_names_small, 
+                                        mode = model_mode,
+                                        protected = protected_features, 
+                                        privileged = privileged_groups)
+```
+
+### Plot error rate fairness (race)
+```{r}
+error_rate_fairness_plot = plot_fairness_metrics(fairness_metrics, 
+                      display_feature = "race_protected",
+                      metric = "error_rate")
+
+print(error_rate_fairness_plot)
+```
+
+### Plot FPR fairness (race)
+```{r}
+fpr_fairness_plot = plot_fairness_metrics(fairness_metrics, 
+                      display_feature = "race_protected",
+                      metric = "fpr")
+
+print(fpr_fairness_plot)
+```
+
+### Plot FNR fairness (race)
+```{r}
+fnr_fairness_plot = plot_fairness_metrics(fairness_metrics, 
+                      display_feature = "race_protected",
+                      metric = "fnr")
+
+print(fnr_fairness_plot)
+```
+
+### Plot demographic parity (race)
+```{r}
+demographic_fairness_plot = plot_fairness_metrics(fairness_metrics, 
+                      display_feature = "race_protected",
+                      metric = "demographic_parity")
+
+print(demographic_fairness_plot)
+```
+
+## Bias Mitigation - Logistic regression
+
+### Set initial parameters 
+```{r}
+bias_model = "logistic_regression"
+
+bias_metrics = metric_set(yardstick::accuracy, 
+                          yardstick::sensitivity, 
+                          yardstick::specificity)
+
+protected = "race_protected"
+
+privileged = "Caucasian"
+
+pred_data_orig = pred_data[[1]]
+```
+
+### Pre-processing via oversampling
+```{r}
+set.seed(10)
+
+oversampled_data = purrr::map(1:2, ~ training(compas_split) %>% 
+  filter(race_protected == "African-American") %>% 
+  slice_sample(n = 1000)) %>% 
+  bind_rows()
+
+compas_train_small = oversampled_data %>% 
+  sample_n(1000) %>% 
+  bind_rows(training(compas_split)) 
+
+compas_train_large = training(compas_split) %>% 
+  bind_rows(oversampled_data)
+```
+
+### Fit models and predict on the test set
+```{r}
+set.seed(10)
+
+fit_mods_small = model_structs[["random_forest"]] %>% 
+  fit(compas_train_small) 
+
+fit_mods_large = model_structs[["random_forest"]] %>% 
+  fit(compas_train_large) 
+
+preds_over_small = gen_pred_data(fit_mods_small, 
+                                 mode = "classification", 
+                                 data_split = compas_split,
+                                 event_level = "1") 
+
+preds_over_large = gen_pred_data(fit_mods_large, 
+                                 mode = "classification", 
+                                 data_split = compas_split,
+                                 event_level = "1") 
+
+pred_list_over = list(pred_data_orig, preds_over_small, preds_over_large)
+over_model_names = c("original", "small_oversample", "large_oversample")
+```
+
+### Get overall performance metrics for oversampled models
+```{r}
+purrr::map(pred_list_over,
+    gen_overall_metrics,
+    target = target_name,
+    estimate = "pred_class",
+    val_interest = "1",
+    metrics = bias_metrics,
+    mode = model_mode) %>%
+  purrr::map2(over_model_names, assign_names) %>%
+  bind_rows() %>%
+  arrange(metric, -estimate)
+```
+
+### Get overall performance metrics within protected groups (race) 
+```{r}
+over_protected_metrics = map2(pred_list_over, 
+                         over_model_names, 
+                         gen_protected_metrics,
+                         target = target_name,
+                         estimate = "pred_class", 
+                         mode = model_mode, 
+                         protected = protected,  
+                         privileged = privileged, 
+                         metrics = bias_metrics) %>% 
+    bind_rows()
+```
+
+### Plot specificity across protected groups (race) 
+```{r}
+over_protected_metrics_plot = plot_protected_metrics(over_protected_metrics, 
+                       protected = protected, 
+                       display_metric = "spec")
+
+print(over_protected_metrics_plot)
+```
+
+### Plot FPR across protected groups (race) 
+```{r}
+oversample_error_direction_plot = plot_error_direction(pred_list_over, 
+                                                mode = model_mode,
+                                                display_feature = protected, 
+                                                false_positive = TRUE, 
+                                                model = over_model_names, 
+                                                target = target_name) 
+
+print(oversample_error_direction_plot)
+```
+
+### Calculate fairness metrics for all models
+```{r}
+oversample_fairness_metrics = gen_fairness_metrics(pred_list_over, 
+                                        target = target_name, 
+                                        model = over_model_names, 
+                                        mode = model_mode,
+                                        protected = protected, 
+                                        privileged = privileged)
+```
+
+### Plot FPR fairness (race)
+```{r}
+fpr_preproc_plot = plot_fairness_metrics(oversample_fairness_metrics, 
+                      display_feature = protected,
+                      metric = "fpr")
+
+print(fpr_preproc_plot)
+```
+
+### Post-processing via optimizing classification thresholds (maxing Youden's J) on race
+```{r}
+set.seed(10)
+
+threshold_frame = gen_optimal_thresholds(pred_data_orig,
+                      protected = protected, 
+                      target = target_name,
+                      prob_event = "pred_1")
+```
+
+### Generate new predictions for models with optimized classification thresholds
+```{r}
+set.seed(10)
+
+preds_j = gen_mitigated_preds(pred_data_orig, 
+                              threshold_frame, 
+                              protected = protected,
+                              prob_event = "pred_1")
+```
+
+### Plot performance metrics for a range of thresholds 
+```{r}
+threshold_plots = plot_model_thresholds(pred_data_orig, 
+               target = target_name, 
+               prob_event = "pred_1", 
+               protected = protected, 
+               metrics = bias_metrics)
+
+print(threshold_plots)
+```
+
+### Generate new predictions for models with manually chosen classification thresholds
+```{r}
+set.seed(10)
+
+preds_manual = gen_mitigated_preds(pred_data_orig, 
+                       threshold_list = list(0.625, 0.375, 0.375, 0.3),
+                       protected = protected,
+                       prob_event = "pred_1")
+```
+
+### Bind all new predictions and names to lists
+```{r}
+all_threshed_preds = list(pred_data_orig, preds_j, preds_manual)
+ 
+post_thresh_models = c("original", "optimized_J_stat", "optimized_manual")
+```
+
+### Calculate performance metrics across protected groups
+```{r}
+threshed_protected_metrics = map2(all_threshed_preds, 
+                         post_thresh_models, 
+                         gen_protected_metrics,
+                         target = target_name,
+                         estimate = "pred_class", 
+                         mode = model_mode, 
+                         protected = protected,  
+                         privileged = privileged, 
+                         metrics = bias_metrics) %>% 
+    bind_rows()
+```
+
+### Plot accuracy accross protected groups (race)
+```{r}
+threshed_acc_plot = plot_protected_metrics(threshed_protected_metrics,
+                       protected = protected, 
+                       display_metric = "accuracy")
+
+print(threshed_acc_plot)
+```
+
+### Plot specificity across protected groups (race) 
+```{r}
+threshed_spec_plot = plot_protected_metrics(threshed_protected_metrics,
+                       protected = protected, 
+                       display_metric = "spec")
+
+print(threshed_spec_plot)
+```
+
+### Plot FPR across protected groups (race)
+```{r}
+opt_fp_error_direction_plot = plot_error_direction(all_threshed_preds, 
+                                                mode = model_mode,
+                                                display_feature = protected, 
+                                                false_positive = TRUE, 
+                                                model = post_thresh_models, 
+                                                target = target_name)
+
+print(opt_fp_error_direction_plot)
+```
+
+### Plot FNR across protected groups (race)
+```{r}
+opt_fn_error_direction_plot = plot_error_direction(all_threshed_preds, 
+                                                mode = model_mode,
+                                                display_feature = protected, 
+                                                false_positive = FALSE, 
+                                                model = post_thresh_models, 
+                                                target = target_name)
+
+print(opt_fn_error_direction_plot)
+```
+
+### Calculate fairness metrics for all models
+```{r}
+opt_fairness_metrics = gen_fairness_metrics(all_threshed_preds, 
+                                            target = target_name, 
+                                            model = post_thresh_models,
+                                            mode = model_mode,
+                                            protected = protected, 
+                                            privileged = privileged)
+```
+
+### Plot FPR fairness
+```{r}
+opt_fpr_plot = plot_fairness_metrics(opt_fairness_metrics, 
+                                     display_feature = "race",
+                                     metric = "fpr") 
+  
+print(opt_fpr_plot)
+```
+
+### Plot specificity fairness
+```{r}
+opt_spec_plot = plot_fairness_metrics(opt_fairness_metrics, 
+                                     display_feature = "race",
+                                     metric = "spec")
+  
+print(opt_spec_plot)
+```
+
+## Bias Mitigation - Random forest
+
+### Set initial parameters 
+```{r}
+bias_model = "random_forest"
+
+bias_metrics = metric_set(yardstick::accuracy, 
+                          yardstick::sensitivity, 
+                          yardstick::specificity)
+
+protected = "race_protected"
+
+privileged = "Caucasian"
+
+pred_data_orig = pred_data[[2]]
+```
+
+### Pre-processing via oversampling
+```{r}
+set.seed(10)
+
+oversampled_data = purrr::map(1:2, ~ training(compas_split) %>% 
+  filter(race_protected == "African-American") %>% 
+  slice_sample(n = 1000)) %>% 
+  bind_rows()
+
+compas_train_small = oversampled_data %>% 
+  sample_n(1000) %>% 
+  bind_rows(training(compas_split)) 
+
+compas_train_large = training(compas_split) %>% 
+  bind_rows(oversampled_data)
+```
+
+### Fit models and predict on the test set
+```{r}
+set.seed(10)
+
+fit_mods_small = model_structs[["random_forest"]] %>% 
+  fit(compas_train_small) 
+
+fit_mods_large = model_structs[["random_forest"]] %>% 
+  fit(compas_train_large) 
+
+preds_over_small = gen_pred_data(fit_mods_small, 
+                                 mode = "classification", 
+                                 data_split = compas_split,
+                                 event_level = "1") 
+
+preds_over_large = gen_pred_data(fit_mods_large, 
+                                 mode = "classification", 
+                                 data_split = compas_split,
+                                 event_level = "1") 
+
+pred_list_over = list(pred_data_orig, preds_over_small, preds_over_large)
+over_model_names = c("original", "small_oversample", "large_oversample")
+```
+
+### Get overall performance metrics for oversampled models
+```{r}
+purrr::map(pred_list_over,
+    gen_overall_metrics,
+    target = target_name,
+    estimate = "pred_class",
+    val_interest = "1",
+    metrics = bias_metrics,
+    mode = model_mode) %>%
+  purrr::map2(over_model_names, assign_names) %>%
+  bind_rows() %>%
+  arrange(metric, -estimate)
+```
+
+### Get overall performance metrics within protected groups (race) 
+```{r}
+over_protected_metrics = map2(pred_list_over, 
+                         over_model_names, 
+                         gen_protected_metrics,
+                         target = target_name,
+                         estimate = "pred_class", 
+                         mode = model_mode, 
+                         protected = protected,  
+                         privileged = privileged, 
+                         metrics = bias_metrics) %>% 
+    bind_rows()
+```
+
+### Plot specificity across protected groups (race) 
+```{r}
+over_protected_metrics_plot = plot_protected_metrics(over_protected_metrics, 
+                       protected = protected, 
+                       display_metric = "spec")
+
+print(over_protected_metrics_plot)
+```
+
+### Plot FPR across protected groups (race) 
+```{r}
+oversample_error_direction_plot = plot_error_direction(pred_list_over, 
+                                                mode = model_mode,
+                                                display_feature = protected, 
+                                                false_positive = TRUE, 
+                                                model = over_model_names, 
+                                                target = target_name) + ylim(0, 28)
+
+print(oversample_error_direction_plot)
+```
+
+### Calculate fairness metrics for all models
+```{r}
+oversample_fairness_metrics = gen_fairness_metrics(pred_list_over, 
+                                        target = target_name, 
+                                        model = over_model_names, 
+                                        mode = model_mode,
+                                        protected = protected, 
+                                        privileged = privileged)
+```
+
+### Plot FPR fairness (race)
+```{r}
+fpr_preproc_plot = plot_fairness_metrics(oversample_fairness_metrics, 
+                      display_feature = protected,
+                      metric = "fpr")
+
+print(fpr_preproc_plot)
+```
+
+### Post-processing via optimizing classification thresholds (maxing Youden's J) on race
+```{r}
+set.seed(10)
+
+threshold_frame = gen_optimal_thresholds(pred_data_orig,
+                      protected = protected, 
+                      target = target_name,
+                      prob_event = "pred_1")
+```
+
+### Generate new predictions for models with optimized classification thresholds
+```{r}
+set.seed(10)
+
+preds_j = gen_mitigated_preds(pred_data_orig, 
+                              threshold_frame, 
+                              protected = protected,
+                              prob_event = "pred_1")
+```
+
+### Plot performance metrics for a range of thresholds 
+```{r}
+threshold_plots = plot_model_thresholds(pred_data_orig, 
+               target = target_name, 
+               prob_event = "pred_1", 
+               protected = protected, 
+               metrics = bias_metrics)
+
+print(threshold_plots)
+```
+
+### Generate new predictions for models with manually chosen classification thresholds
+```{r}
+set.seed(10)
+
+preds_manual = gen_mitigated_preds(pred_data_orig, 
+                       threshold_list = list(0.625, 0.45, 0.375, 0.125),
+                       protected = protected,
+                       prob_event = "pred_1")
+```
+
+### Bind all new predictions and names to lists
+```{r}
+all_threshed_preds = list(pred_data_orig, preds_j, preds_manual)
+ 
+post_thresh_models = c("original", "optimized_J_stat", "optimized_manual")
+```
+
+### Calculate performance metrics across protected groups
+
+```{r}
+threshed_protected_metrics = map2(all_threshed_preds, 
+                         post_thresh_models, 
+                         gen_protected_metrics,
+                         target = target_name,
+                         estimate = "pred_class", 
+                         mode = model_mode, 
+                         protected = protected,  
+                         privileged = privileged, 
+                         metrics = bias_metrics) %>% 
+    bind_rows()
+```
+
+### Plot accuracy accross protected groups (race)
+```{r}
+threshed_acc_plot = plot_protected_metrics(threshed_protected_metrics,
+                       protected = protected, 
+                       display_metric = "accuracy")
+
+print(threshed_acc_plot)
+```
+
+### Plot specificity across protected groups (race) 
+```{r}
+threshed_spec_plot = plot_protected_metrics(threshed_protected_metrics,
+                       protected = protected, 
+                       display_metric = "spec")
+
+print(threshed_spec_plot)
+```
+
+### Plot FPR across protected groups (race)
+```{r}
+opt_fp_error_direction_plot = plot_error_direction(all_threshed_preds, 
+                                                mode = model_mode,
+                                                display_feature = protected, 
+                                                false_positive = TRUE, 
+                                                model = post_thresh_models, 
+                                                target = target_name)
+
+print(opt_fp_error_direction_plot)
+```
+
+### Plot FNR across protected groups (race)
+```{r}
+opt_fn_error_direction_plot = plot_error_direction(all_threshed_preds, 
+                                                mode = model_mode,
+                                                display_feature = protected, 
+                                                false_positive = FALSE, 
+                                                model = post_thresh_models, 
+                                                target = target_name)
+
+print(opt_fn_error_direction_plot)
+```
+
+### Calculate fairness metrics for all models
+```{r}
+opt_fairness_metrics = gen_fairness_metrics(all_threshed_preds, 
+                                            target = target_name, 
+                                            model = post_thresh_models,
+                                            mode = model_mode,
+                                            protected = protected, 
+                                            privileged = privileged)
+```
+
+### Plot FPR fairness
+```{r}
+opt_fpr_plot = plot_fairness_metrics(opt_fairness_metrics, 
+                                     display_feature = "race",
+                                     metric = "fpr") 
+  
+print(opt_fpr_plot)
+```
+
+### Plot specificity fairness
+```{r}
+opt_spec_plot = plot_fairness_metrics(opt_fairness_metrics, 
+                                     display_feature = "race",
+                                     metric = "spec")
+  
+print(opt_spec_plot)
+```
+
+
+## Interpretability work
+
+### Generate IML objects from each of the fit models 
+```{r}
+set.seed(10)
+
+iml_test_data = pred_data[[1]] %>% 
+  dplyr::select(-matches("pred_"))
+
+iml_preds = get_iml_preds(fit_mods, 
+                          data = iml_test_data, 
+                          target = target_name)
+
+
+```
+
+### Calculate permutation feature importance for each model and plot
+```{r}
+set.seed(10)
+
+permutation_plots = plot_permutation_importance(iml_preds, 
+                                          model_names = model_names_small,
+                                          mode = model_mode) 
+
+print(permutation_plots) 
+```
+
+### Plot PDPs for each model
+```{r}
+set.seed(10)
+
+global_plots = plot_global_interp(iml_preds, 
+                                  model_names_small,
+                                  display_feature = "priors_count")
+
+print(global_plots)
+```
+
+### Create new models fit only on one of each protected group (race)
+```{r}
+set.seed(10)
+
+race_groups = list("African-American", "Caucasian", "Hispanic", "Other")
+
+per_race_logs = gen_group_model(model_structs[["logistic_regression"]],
+                df = processed_data[["input_data"]],
+                protected_group = "race_protected") %>%
+  set_names(race_groups)
+
+per_race_rfs = gen_group_model(model_structs[["random_forest"]], 
+                df = processed_data[["input_data"]],
+                protected_group = "race_protected") %>% 
+  set_names(race_groups)
+```
+
+### Generate IML objects from each of the per-group (race) random forests
+```{r}
+set.seed(10)
+
+iml_test_data = pred_data[[1]] %>% 
+  dplyr::select(-matches("pred_"))
+
+grouped_iml_preds = get_iml_preds(per_race_rfs, 
+                          data = iml_test_data, 
+                          target = target_name)
+```
+
+### Calculate permutation feature importance for each model and plot
+```{r}
+set.seed(10)
+
+permutation_plots = plot_permutation_importance(grouped_iml_preds, 
+                                          model_names = race_groups,
+                                          mode = model_mode)
+print(permutation_plots) 
+```
+
+### Plot PDPs for each per-group (race) random forest model
+```{r}
+set.seed(10)
+
+global_plots = plot_global_interp(grouped_iml_preds, 
+                                model_names = race_groups,
+                                display_feature = "priors_count")
+print(global_plots)
+```
+
+### Calculate and plot Shapley values
+```{r}
+# forthcoming
+```
+
+
+

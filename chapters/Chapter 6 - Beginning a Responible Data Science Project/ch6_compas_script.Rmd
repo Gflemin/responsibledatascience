@@ -1,0 +1,131 @@
+---
+title: "CH6 COMPAS Code 04/03/2021"
+author: Grant Fleming
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+  word_document: default
+---
+
+### Setup 
+```{r setup}
+# restore packages from lockfile - enter "y" 
+# if you are prompted to install or update any packages
+renv::restore()
+
+# load critical packages - install if necessary by running
+# install.packages(c("here", "pacman"))
+library(here)
+library(pacman)
+
+# source scripts for our packages and functions
+source(here("setup/ch6_packages.R"))
+source(here("setup/ch6_functions.R"))
+
+# set a seed
+set.seed(10)
+```
+
+# Compilation 
+```{r}
+# get raw COMPAS data
+compas_raw = read_csv(here("data/compas-scores-two-years.csv"))
+
+# set a seed
+set.seed(10)
+```
+
+### Examine raw data
+```{r}
+print(compas_raw)
+```
+
+### Initial data cleaning
+```{r}
+compas_propublica = compas_raw %>% 
+    filter(days_b_screening_arrest <= 30) %>%
+    filter(days_b_screening_arrest >= -30) %>%
+    filter(is_recid != -1) %>%
+    filter(c_charge_degree != "O") %>%
+    filter(compas_screening_date <= as.Date("2014-04-01")) 
+
+```
+
+### View data after initial cleaning
+```{r}
+glimpse(compas_propublica)
+```
+
+### Feature selection and engineering
+```{r}
+compas = compas_propublica %>% 
+  dplyr::select(age_cat, c_charge_degree, race, sex, priors_count, 
+                juv_fel_count, juv_misd_count, juv_other_count, two_year_recid) %>% 
+  dplyr::select(age_cat, c_charge_degree, race, sex, priors_count, 
+                juv_fel_count, juv_misd_count, juv_other_count, two_year_recid) %>% 
+  mutate(race = ifelse(race %in% c("Native American", "Asian", "Other"), "Other", race)) %>% 
+  mutate(race = factor(race, levels = c("Caucasian", "African-American", "Hispanic", "Other"))) %>%
+  mutate(juv_charge = ifelse(juv_fel_count > 0 | juv_misd_count > 0 | 
+                             juv_other_count > 0, "yes", "no")) %>% 
+  dplyr::select(-c(juv_fel_count, juv_misd_count, juv_other_count)) %>%
+  mutate(two_year_recid = factor(two_year_recid, levels = c("0", "1"))) %>%
+  clean_names() 
+```
+
+### NA check
+```{r}
+# no output rows means no missing values
+compas %>%
+  drop_na()
+```
+
+
+### Make protected features
+```{r}
+compas_protected = compas %>%
+  make_protected(c("age", "race", "sex"))
+```
+
+### Show protected features
+```{r}
+compas_protected %>% 
+  select(matches("_protected")) %>% 
+  colnames()
+```
+
+
+# Preparation
+
+### Split into train and test sets
+```{r}
+compas_split = compas_protected %>%
+  initial_split(0.7) # check rules for splitting
+
+compas_training = training(compas_split)
+compas_testing = testing(compas_split)
+```
+
+### Finish data preprocessing (feature engineering)
+```{r}
+compas_preprocessed = gen_preprocessed_data(compas_split, target = "two_year_recid")
+```
+
+### View preprocessed train data
+```{r}
+print(compas_preprocessed[["train"]])
+```
+
+### Check levels of race_protected
+```{r}
+levels(compas_preprocessed[["train"]]$race_protected)
+```
+
+### Create datasheet
+```{r}
+# forthcoming
+```
+
+
+

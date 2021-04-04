@@ -1,0 +1,178 @@
+---
+title: "ch6_communities_script.Rmd 04/03/2021"
+author: Grant Fleming
+output:
+  word_document: default
+  html_notebook:
+    highlight: null
+  html_document:
+    df_print: paged
+---
+
+### Setup 
+```{r setup}
+# restore packages from lockfile - enter "y" 
+# if you are prompted to install or update any packages
+renv::restore()
+
+# load critical packages - install if necessary by running
+# install.packages(c("here", "pacman"))
+library(here)
+library(pacman)
+
+# source scripts for our packages and functions
+source(here("setup/ch6_packages.R"))
+source(here("setup/ch6_functions.R"))
+
+# set a seed
+set.seed(10)
+```
+ 
+# Compilation
+
+### Load raw Communities and Crime data
+```{r}
+crime_raw = read_csv(here("data/crimedata.csv"))
+```
+
+### View raw data
+```{r}
+print(crime_raw)
+```
+
+### Initial feature selection and reordering
+```{r}
+crime_raw2 = crime_raw %>% 
+  relocate(assaults) %>% 
+  select(-c(131:ncol(.))) %>% 
+  select(-c(2:6)) %>% 
+  mutate(assaults = as.numeric(assaults)) %>% 
+  rename_with(tolower) 
+
+```
+
+### Checking for explicit vs. implicit NAs
+```{r}
+no_na_rows = crime_raw2 %>% 
+  drop_na()
+
+na_rows = crime_raw2 %>% 
+  anti_join(no_na_rows) 
+
+print(na_rows)
+```
+
+### Find proportion of implicit NAs ("?") in each column
+```{r}
+# how many cols are filled with ? marks
+map(crime_raw2, function(x) sum(x == "?")/length(x)) %>% 
+  enframe() %>% 
+  rename(proportion_missing = value) %>% 
+  unnest(proportion_missing) %>% 
+  filter(proportion_missing >= 0.10) %>% 
+  arrange(-proportion_missing) 
+```
+
+### Drop columns with too many implicit NAs ("?")
+```{r}
+# get a list of the cols that have too many "?"s (above 10%)
+drop_cols = map(crime_raw2, function(x) sum(x == "?")/length(x)) %>% 
+    enframe() %>% 
+    unnest(value) %>% 
+    filter(value >= 0.10) %>% 
+    pull(name) 
+
+# drop them
+crime_raw3 = crime_raw2 %>% 
+  select(-all_of(drop_cols))
+
+```
+
+### Check to see if columns add up to 100%
+```{r}
+crime_raw3 %>% 
+  select(contains("racepct")) %>% 
+  rowwise() %>% 
+  mutate(total = sum(c_across(everything()))) %>% 
+  arrange(-total)
+```
+
+### Protect groups
+```{r}
+crime_raw4 = crime_raw3 %>% 
+  rowid_to_column() %>% 
+  relocate(rowid) %>% 
+  select(-matches("percap")) %>% 
+  rename_with(., function(x) paste0(x, "_protected"), matches("racepct"))
+
+```
+
+### View protected groups
+```{r}
+protected_features = crime_raw4 %>% 
+  select(matches("_protected")) %>% 
+  colnames()
+
+print(protected_features)
+```
+
+
+# Preparation
+
+### Split data
+```{r}
+crime_split = crime_raw4 %>% 
+  initial_split(0.7) # check rules for splitting 
+
+crime_training = training(crime_split)
+crime_testing = testing(crime_split)
+
+glimpse(crime_training)
+```
+
+### Check correlations among features 
+```{r}
+crime_features = crime_training %>% 
+  select(-c(assaults, rowid))
+
+# function creates one plot per protected feature of the top n = number features that are correlated with
+# the particular level of the protected feature (protected group) being plotted. larger gaps between the
+# red and black points (average correlation between that feature and all other protected groups) indicate 
+# that the feature on the X axis is more correlated with that protected group than with the others. 
+check_correlations(crime_training, 
+                   drop_cols = c("assaults", "rowid"), 
+                   protected_features, 
+                   number = 5)
+```
+
+
+### Feature engineering
+```{r}
+target = "assaults"
+
+form = paste(paste(target, "~"), str_c(colnames(crime_training %>% select(-all_of(target))),
+                                         collapse = "+"))
+
+rec = recipe(crime_training, form) %>%
+  update_role(matches("_protected"), new_role = "protected") %>%
+  step_nzv(all_predictors(), -has_role("protected")) %>%
+  step_corr(all_predictors(), threshold = 0.7, -has_role("protected")) %>% 
+  step_medianimpute(all_numeric(), -all_outcomes()) %>%
+  step_range(all_numeric()) %>%
+  prep()
+
+train_data = juice(rec) 
+test_data = bake(rec, testing(crime_split))
+```
+
+### Show new training data
+```{r}
+print(train_data)
+```
+
+### Create datasheet
+```{r}
+# forthcoming
+```
+
+
