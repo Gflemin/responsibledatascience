@@ -7,7 +7,7 @@ Transparency and Fairness in Algorithms
 
 Grant Fleming and [Peter Bruce](https://www.amazon.com/Peter-Bruce/e/B01N3C4ACN%3Fref=dbs_a_mng_rwt_scns_share)
 
-- Publisher: Wiley; 1st edition (May 11th, 2022)
+- Publisher: Wiley; 1st edition (May 11th, 2021)
 - ISBN-10: 1119741750
 - ISBN-13: 978-1119741756
 - Buy on [Amazon](https://www.amazon.com/Responsible-Data-Science-Transparency-Algorithms/dp/1119741750)
@@ -30,19 +30,22 @@ Note that running these scripts without modification requires:
 - R >= 3.6
 - RStudio >= 1.2
 
+Some code mentioned in the book is still forthcoming. This README will be updated when it is
+made available. 
+
 ## Python
 The Python code for the book is exclusively for the facial recognition
 example in Chapter 8. Unfortunately, the code and data for this chapter is 
-large in size and does not fit into the code repository itself. To download and
+large in size (>600 MB) and does not fit into the code repository itself. To download and
 run it yourself, you should do the following:
 
-1. Navigate to the folder at https://drive.google.com/drive/folders/13OpxSM3B1ff5AHkRbcHsR4Ys3_44OCuA?usp=sharing and
-download both files
-2. Upload the code_and_data.zip file to the home directory of your personal Google Drive _without_ unzipping the .zip
-file.
-3. Navigate to https://colab.research.google.com/notebooks/ and click "Upload" to upload the 
-ch8_fairness_in_computer_vision.ipynb file in Google Colab.
-4. Run the first code chunk (from google.colab import drive...) and input the authentication code.
+1. Navigate to https://www.wiley.com/en-us/Responsible+Data+Science-p-9781119741640 and download the file labeled "Code and Data for Chapter 8" in the "Downloads" section of the page.
+2. Unzip the Code_and_Data_for_Chapter_8.zip file to a folder on your local computer. 
+3. Upload the code_and_data.zip folder within your new Code_and_Date_for_Chapter_8 folder to the "My Drive" folder of your Google Drive account _without_ unzipping it.
+4. Navigate to https://colab.research.google.com/notebooks/ and click "Upload" to upload the 
+ch8_fairness_in_computer_vision.ipynb file from your computer into Google Colab.
+5. Run the first code chunk (from google.colab import drive...) and input the authentication code.
+6. Run the remaining code within the script.
 
 ## See also
 - Wiley: https://www.wiley.com/en-us/Responsible+Data+Science-p-9781119741756
